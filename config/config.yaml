@@ -1,0 +1,24 @@
+# Configuration for Edge-First EEG Vigilance Architecture
+
+mqtt:
+  broker_host: "localhost"
+  broker_port: 1883
+  topic_template: "study/{user_id}/eeg/observation"
+  client_id: "edge-gateway-01"
+  keepalive: 60
+
+decision:
+  persistence_n_seconds: 30
+  probability_threshold: 0.70
+  refractory_minutes: 20
+  max_alerts_per_hour: 2
+
+simulator:
+  stream_interval_seconds: 1.0
+  user_id: "user-01"
+  device_id: "tgam-headband-01"
+  input_file: null
+
+quality:
+  contact_quality_max_threshold: 50.0
+  imu_motion_max_threshold: 1.5

@@ -1,0 +1,44 @@
+version: "3.8"
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: eeg-mosquitto-broker
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    restart: unless-stopped
+
+  edge-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: eeg-edge-gateway
+    command: python src/gateway_main.py --config config/config.yaml
+    environment:
+      - PYTHONPATH=.
+      - MQTT_BROKER_HOST=mosquitto
+    volumes:
+      - .:/app
+    depends_on:
+      - mosquitto
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: eeg-streamlit-dashboard
+    command: streamlit run dashboard/app_streamlit.py --server.port=8501 --server.address=0.0.0.0
+    ports:
+      - "8501:8501"
+    environment:
+      - PYTHONPATH=.
+      - MQTT_BROKER_HOST=mosquitto
+    volumes:
+      - .:/app
+    depends_on:
+      - mosquitto
+    restart: unless-stopped
