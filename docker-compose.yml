@@ -1,6 +1,16 @@
+# ==============================================================================
+# Docker Compose — Edge-First EEG Vigilance Multi-Container Stack
+# ==============================================================================
+# Coordinates three microservices on a shared bridge network:
+#   1. mosquitto    — MQTT telemetry broker (ports 1883 & 9001)
+#   2. edge-gateway — Signal acquisition, quality gating, alert engine, FHIR/MQTT
+#   3. dashboard    — Real-time Streamlit clinical telemetry visualisation (port 8501)
+# ==============================================================================
+
 version: "3.8"
 
 services:
+  # MQTT Message Broker
   mosquitto:
     image: eclipse-mosquitto:2.0
     container_name: eeg-mosquitto-broker
@@ -11,6 +21,7 @@ services:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
     restart: unless-stopped
 
+  # Edge Gateway Pipeline
   edge-gateway:
     build:
       context: .
@@ -26,6 +37,7 @@ services:
       - mosquitto
     restart: unless-stopped
 
+  # Presentation Layer: Real-Time Streamlit Dashboard
   dashboard:
     build:
       context: .

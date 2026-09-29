@@ -1,24 +1,68 @@
+# ==============================================================================
 # Configuration for Edge-First EEG Vigilance Architecture
+# ==============================================================================
+# This configuration file governs the runtime parameters of all pipeline layers:
+# ingestion, signal quality gating, alert decision rules, and MQTT transport.
+# ==============================================================================
 
 mqtt:
+  # Hostname or IP address of the MQTT message broker (e.g., Eclipse Mosquitto).
+  # When deployed via Docker Compose, override with the environment variable
+  # MQTT_BROKER_HOST=mosquitto so the edge gateway container resolves the broker service.
   broker_host: "localhost"
+
+  # Standard unencrypted MQTT TCP listening port (default: 1883).
   broker_port: 1883
+
+  # Hierarchical topic pattern for telemetry transmission.
+  # {user_id} is dynamically replaced at runtime by the simulator's user identifier.
   topic_template: "study/{user_id}/eeg/observation"
+
+  # Unique MQTT Client Identifier presented during the CONNECT handshake.
   client_id: "edge-gateway-01"
+
+  # Maximum duration in seconds between PINGREQ keep-alive messages.
   keepalive: 60
 
 decision:
+  # Persistence requirement: minimum duration (in seconds) that vigilance-drop
+  # probability must remain continuously above probability_threshold before firing.
+  # Prevents reacting to momentary micro-sleeps or transient blinks (clinical safety).
   persistence_n_seconds: 30
+
+  # Binary decision boundary for classification: probability above this value
+  # triggers the persistence evaluation counter.
   probability_threshold: 0.70
+
+  # Refractory period (lockout): minimum interval (in minutes) after an alert is emitted
+  # during which new alerts are suppressed. Mitigates alarm fatigue by allowing
+  # interventions (e.g., driver rest stop or caffeine) time to take effect.
   refractory_minutes: 20
+
+  # Hard frequency cap: maximum number of alerts permitted within any rolling 60-minute window.
+  # Acts as a safety ceiling against sensor drift or unstable thresholds.
   max_alerts_per_hour: 2
 
 simulator:
+  # Cadence of synthetic EEG window emission (in seconds).
+  # 1.0 represents standard 1 Hz epoch progression.
   stream_interval_seconds: 1.0
+
+  # Identifier of the monitored subject, mapped to FHIR Observation.subject.
   user_id: "user-01"
+
+  # Identifier of the sensor device, mapped to FHIR Observation.device.
   device_id: "tgam-headband-01"
+
+  # Optional CSV / EDF file path containing real EEG recording data.
+  # Set to null to use synthetic mathematical waveform generation.
   input_file: null
 
 quality:
+  # Maximum acceptable electrode impedance / contact index (arbitrary 0-100 scale).
+  # Windows with contact_quality > 50.0 are flagged INDETERMINATE (poor scalp coupling).
   contact_quality_max_threshold: 50.0
+
+  # Maximum allowable head motion acceleration (in Gs or standard deviations).
+  # Windows with imu_motion > 1.5 are flagged INDETERMINATE (motion artifact rejection).
   imu_motion_max_threshold: 1.5
