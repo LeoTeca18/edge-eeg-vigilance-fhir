@@ -1,8 +1,34 @@
-"""Main Edge Orchestrator Pipeline.
+"""Main Edge Orchestrator Pipeline — coordinates all four architecture layers.
 
-Coordinates Acquisition (Simulator), Quality Assessment (QualityGate),
-Decision Rules (AlertDecisionEngine), Interoperability (FHIRBuilder),
-and Transport (MqttPublisher).
+WHY THIS MODULE EXISTS
+----------------------
+The individual modules (simulator, quality gate, decision engine, FHIR
+builder, MQTT publisher) are each responsible for a single concern.  This
+module is the **orchestrator** that wires them together into a coherent,
+real-time processing pipeline.
+
+Without a central orchestrator, each module would need to know about the
+others, creating tight coupling and making the system difficult to test,
+modify, or extend.
+
+HOW IT WORKS
+------------
+``run_pipeline()`` executes the following loop at approximately 1 Hz:
+
+    1. **Acquire** a window from ``StreamSimulator`` (synthetic or file).
+    2. **Assess quality** via ``QualityGate`` → USABLE / INDETERMINATE.
+    3. **Evaluate decision** via ``AlertDecisionEngine`` → trigger or suppress.
+    4. **Build FHIR R4 Observation** via ``build_fhir_observation()``.
+    5. **Publish** the JSON payload to MQTT via ``MqttPublisher``.
+    6. **Log** telemetry (quality status, drop probability, alert state).
+
+The loop runs indefinitely (production mode) or for a fixed number of
+windows (test/demo mode via ``--max-windows``).  It handles graceful
+shutdown on ``Ctrl+C`` (KeyboardInterrupt).
+
+COMMAND-LINE INTERFACE
+----------------------
+    python src/gateway_main.py --config config/config.yaml --max-windows 100
 """
 
 import argparse
@@ -12,7 +38,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Add parent directory to path if needed when running script directly
+# Add parent directory to Python path when running the script directly
+# (e.g. ``python src/gateway_main.py``).  This ensures that ``from src.xxx``
+# imports resolve correctly regardless of the working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.config_loader import load_config
@@ -22,7 +50,8 @@ from src.mqtt_client import MqttPublisher
 from src.quality_gate import QualityGate
 from src.simulator import StreamSimulator
 
-# Configure structured logging
+# Configure structured logging with human-readable timestamps.
+# All pipeline output goes to stdout so Docker Compose can aggregate logs.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
@@ -35,14 +64,26 @@ logger = logging.getLogger("EdgeGateway")
 def run_pipeline(config_path: str = "config/config.yaml", max_windows: int = None) -> None:
     """Executes the main edge gateway processing loop.
 
+    This function is the entry point for the entire pipeline.  It:
+        1. Loads and validates the YAML configuration.
+        2. Instantiates all core components via dependency injection.
+        3. Connects to the MQTT broker (with graceful degradation if offline).
+        4. Enters the stream-process-publish loop.
+        5. Handles shutdown cleanly on interruption.
+
     Args:
-        config_path: Path to configuration YAML file.
-        max_windows: Optional maximum windows to process (useful for tests/demos).
+        config_path: Filesystem path to the YAML configuration file.
+        max_windows: Optional maximum number of windows to process before
+                     exiting.  ``None`` means infinite (stop with Ctrl+C).
     """
     logger.info("Initializing Edge-First EEG Vigilance Architecture...")
     config = load_config(config_path)
 
-    # 1. Instantiate Core Components
+    # -------------------------------------------------------------------------
+    # Step 1: Instantiate Core Components
+    # Each component receives only its relevant sub-configuration, enforcing
+    # separation of concerns and making unit testing straightforward.
+    # -------------------------------------------------------------------------
     simulator = StreamSimulator(
         input_file=config.simulator.input_file,
         stream_interval_seconds=config.simulator.stream_interval_seconds,
@@ -60,16 +101,25 @@ def run_pipeline(config_path: str = "config/config.yaml", max_windows: int = Non
         keepalive=config.mqtt.keepalive,
     )
 
-    # 2. Establish MQTT Broker Connection
+    # -------------------------------------------------------------------------
+    # Step 2: Establish MQTT Broker Connection
+    # The pipeline continues even if the broker is unreachable — observations
+    # are still processed and logged locally; only MQTT transport is skipped.
+    # -------------------------------------------------------------------------
     logger.info(f"Connecting to MQTT Broker at {config.mqtt.broker_host}:{config.mqtt.broker_port}...")
     connected = mqtt_publisher.connect(retry_count=2, retry_delay=0.2)
     if not connected:
         logger.warning("Proceeding without active MQTT connection (messages will be logged locally).")
 
+    # Format the MQTT topic with the subject's user_id.
     topic = config.mqtt.topic_template.format(user_id=config.simulator.user_id)
     logger.info(f"Pipeline Active. Publishing FHIR Observations to MQTT Topic: '{topic}'")
 
-    # 3. Stream & Process Loop
+    # -------------------------------------------------------------------------
+    # Step 3: Stream & Process Loop
+    # Each iteration processes one EEG window through the full pipeline:
+    #   Acquire → Quality Gate → Decision Engine → FHIR Build → MQTT Publish
+    # -------------------------------------------------------------------------
     processed_count = 0
     try:
         for window in simulator.stream_windows(max_windows=max_windows):
@@ -77,9 +127,11 @@ def run_pipeline(config_path: str = "config/config.yaml", max_windows: int = Non
             p_drop = window.get("p_vigilance_drop", 0.0)
 
             # Step A: Evaluate Signal Quality
+            # Determines if the window's EEG signal is physically trustworthy.
             quality_eval = quality_gate.evaluate_window(window)
 
             # Step B: Evaluate Stateful Decision Engine
+            # Checks persistence, refractory, and budget rules.
             ts_iso = window.get("timestamp")
             dt_obj = datetime.fromisoformat(ts_iso) if ts_iso else datetime.now(timezone.utc)
             decision_result = decision_engine.process_window(
@@ -89,6 +141,8 @@ def run_pipeline(config_path: str = "config/config.yaml", max_windows: int = Non
             )
 
             # Step C: Build FHIR R4 Observation Resource
+            # Converts all telemetry + quality + decision data into a
+            # standardised FHIR Observation with four components.
             fhir_obs = build_fhir_observation(
                 window=window,
                 quality_eval=quality_eval,
@@ -100,9 +154,12 @@ def run_pipeline(config_path: str = "config/config.yaml", max_windows: int = Non
             fhir_json = observation_to_json(fhir_obs)
 
             # Step D: Publish Payload over MQTT
+            # Returns True if delivered, False if offline (pipeline continues).
             pub_status = mqtt_publisher.publish(topic, fhir_json, qos=1)
 
             # Step E: Telemetry & Logging Output
+            # Provides a concise per-window summary for debugging and
+            # operational monitoring.
             status_symbol = "[OK]" if quality_eval.is_usable else "[REJECTED]"
             alert_symbol = "[ALERT TRIGGERED]" if decision_result.trigger_alert else "[NORMAL]"
 
@@ -123,11 +180,13 @@ def run_pipeline(config_path: str = "config/config.yaml", max_windows: int = Non
     except KeyboardInterrupt:
         logger.info("Pipeline stopped by user (KeyboardInterrupt).")
     finally:
+        # Ensure clean shutdown: stop MQTT background thread and close socket.
         mqtt_publisher.disconnect()
         logger.info(f"Pipeline shutdown complete. Total windows processed: {processed_count}")
 
 
 if __name__ == "__main__":
+    # Command-line argument parser for standalone execution.
     parser = argparse.ArgumentParser(description="Edge Gateway EEG Vigilance Orchestrator")
     parser.add_argument(
         "--config",
