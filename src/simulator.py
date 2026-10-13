@@ -54,13 +54,19 @@ from pathlib import Path
 from typing import Any, Dict, Generator, Optional
 import pandas as pd
 
+from src.acquisition_base import AcquisitionSource
 
-class StreamSimulator:
+
+class StreamSimulator(AcquisitionSource):
     """Emulates a single-channel consumer EEG stream (e.g. NeuroSky TGAM).
 
     Supports loading pre-recorded session data from Excel/CSV files for
     reproducible experiments, or generating continuous synthetic telemetry
     for development, demos, and automated testing.
+
+    Implements the ``AcquisitionSource`` interface, allowing the gateway
+    pipeline to swap between file replay, synthetic generation, and future
+    live BLE ingestion without code changes.
     """
 
     def __init__(
