@@ -66,3 +66,11 @@ quality:
   # Maximum allowable head motion acceleration (in Gs or standard deviations).
   # Windows with imu_motion > 1.5 are flagged INDETERMINATE (motion artifact rejection).
   imu_motion_max_threshold: 1.5
+
+  # Maximum acceptable blink count per 2-second EEG window.
+  # Excessive blinking introduces frontal EOG artifacts that distort spectral features.
+  blink_count_max_threshold: 3
+
+  # Maximum acceptable EMG / high-beta proxy power (µV²).
+  # High values indicate muscle tension artifacts (jaw clenching, facial contraction).
+  emg_power_max_threshold: 30.0

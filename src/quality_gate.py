@@ -106,16 +106,18 @@ class QualityGate:
         self.config = config or QualityConfig()
 
     def evaluate_window(self, window: Dict[str, Any]) -> QualityEvaluation:
-        """Runs contact quality and motion artifact checks on a single window.
+        """Runs contact quality, motion, blink, and EMG artifact checks on a
+        single window.
 
-        The evaluation is **order-independent** — both checks always run, and
-        all failing reasons are collected.  This means a window can fail on
-        two grounds simultaneously (e.g. sensor lifted AND user moving).
+        The evaluation is **order-independent** — all four checks always run,
+        and all failing reasons are collected.  This means a window can fail
+        on multiple grounds simultaneously.
 
         Args:
-            window: Dictionary containing at least ``contact_quality`` (float)
-                    and ``imu_motion`` (float) keys.  Missing keys default to
-                    0.0, which passes both checks.
+            window: Dictionary containing at least ``contact_quality`` (float),
+                    ``imu_motion`` (float), ``blink_count`` (int), and
+                    ``emg_power`` (float) keys.  Missing keys default to
+                    safe values that pass all checks.
 
         Returns:
             ``QualityEvaluation`` with status, collected rejection reasons,
@@ -123,6 +125,8 @@ class QualityGate:
         """
         contact = float(window.get("contact_quality", 0.0))
         motion = float(window.get("imu_motion", 0.0))
+        blink_count = int(window.get("blink_count", 0))
+        emg_power = float(window.get("emg_power", 0.0))
         reasons: List[str] = []
 
         # Check 1: Electrode contact impedance
@@ -143,6 +147,25 @@ class QualityGate:
             reasons.append(
                 f"Excessive head/body movement index ({motion:.2f} > threshold "
                 f"{self.config.imu_motion_max_threshold:.2f})"
+            )
+
+        # Check 3: Excessive blink artifacts (EOG contamination)
+        # Eye blinks produce large frontal potentials that propagate into
+        # the single-channel EEG, distorting alpha-band power estimates.
+        if blink_count > self.config.blink_count_max_threshold:
+            reasons.append(
+                f"Excessive blink count ({blink_count} > threshold "
+                f"{self.config.blink_count_max_threshold})"
+            )
+
+        # Check 4: High-beta / EMG proxy power (muscle artifact)
+        # Jaw clenching, facial muscle tension, and teeth grinding produce
+        # broadband EMG noise that elevates high-beta power and corrupts
+        # spectral ratio calculations.
+        if emg_power > self.config.emg_power_max_threshold:
+            reasons.append(
+                f"High EMG/beta proxy power ({emg_power:.1f} > threshold "
+                f"{self.config.emg_power_max_threshold:.1f})"
             )
 
         if reasons:

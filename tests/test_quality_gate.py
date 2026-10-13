@@ -100,3 +100,60 @@ def test_quality_gate_multiple_artifacts():
     result = gate.evaluate_window(artifact_window)
     assert result.status == QualityGateResult.INDETERMINATE
     assert len(result.reasons) == 2
+
+
+def test_quality_gate_excessive_blinks():
+    """Verifies that a window with excessive blink count is classified
+    as INDETERMINATE.
+
+    Eye blinks produce large frontal EOG potentials that propagate into
+    the single-channel EEG signal, distorting alpha-band power estimates.
+    The gate must flag windows with too many blinks.
+    """
+    config = QualityConfig(
+        contact_quality_max_threshold=50.0,
+        imu_motion_max_threshold=1.5,
+        blink_count_max_threshold=3,
+        emg_power_max_threshold=30.0,
+    )
+    gate = QualityGate(config)
+
+    blinky_window = {
+        "contact_quality": 0.0,
+        "imu_motion": 0.2,
+        "blink_count": 5,
+        "emg_power": 10.0,
+    }
+    result = gate.evaluate_window(blinky_window)
+    assert result.status == QualityGateResult.INDETERMINATE
+    assert result.is_usable is False
+    assert any("blink count" in r.lower() for r in result.reasons)
+
+
+def test_quality_gate_high_emg_power():
+    """Verifies that a window with high EMG/high-beta proxy power is
+    classified as INDETERMINATE.
+
+    Jaw clenching, facial muscle tension, and teeth grinding produce
+    broadband EMG noise that elevates high-beta power and corrupts
+    spectral ratio calculations used for vigilance classification.
+    """
+    config = QualityConfig(
+        contact_quality_max_threshold=50.0,
+        imu_motion_max_threshold=1.5,
+        blink_count_max_threshold=3,
+        emg_power_max_threshold=30.0,
+    )
+    gate = QualityGate(config)
+
+    tense_window = {
+        "contact_quality": 5.0,
+        "imu_motion": 0.3,
+        "blink_count": 0,
+        "emg_power": 45.0,
+    }
+    result = gate.evaluate_window(tense_window)
+    assert result.status == QualityGateResult.INDETERMINATE
+    assert result.is_usable is False
+    assert any("emg" in r.lower() for r in result.reasons)
+

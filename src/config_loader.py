@@ -171,6 +171,22 @@ class QualityConfig(BaseModel):
             "into the EEG signal."
         ),
     )
+    blink_count_max_threshold: int = Field(
+        default=3,
+        description=(
+            "Maximum acceptable blink count per window.  Excessive blinking "
+            "introduces frontal EOG artifacts that distort the EEG spectral "
+            "features used for vigilance classification."
+        ),
+    )
+    emg_power_max_threshold: float = Field(
+        default=30.0,
+        description=(
+            "Maximum acceptable EMG / high-beta proxy power.  High values "
+            "indicate muscle tension artifacts (jaw clenching, facial "
+            "contraction) that contaminate the EEG signal in the beta band."
+        ),
+    )
 
 
 class AppConfig(BaseModel):
