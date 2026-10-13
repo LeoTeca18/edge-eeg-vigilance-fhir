@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.config_loader import load_config
 from src.decision_layer import AlertDecisionEngine
 from src.fhir_builder import build_fhir_observation, observation_to_json
+from src.local_store import LocalFhirStore
 from src.mqtt_client import MqttPublisher
 from src.quality_gate import QualityGate
 from src.simulator import StreamSimulator
@@ -102,6 +103,14 @@ def run_pipeline(config_path: str = "config/config.yaml", max_windows: int = Non
     )
 
     # -------------------------------------------------------------------------
+    # Step 1b: Initialise Local FHIR Store (Offline-First Persistence)
+    # Every observation is persisted locally BEFORE MQTT publication, ensuring
+    # no clinical data is lost even if the broker is unreachable.
+    # -------------------------------------------------------------------------
+    local_store = LocalFhirStore()
+    logger.info(f"Local FHIR Store initialised at '{local_store.db_path}'")
+
+    # -------------------------------------------------------------------------
     # Step 2: Establish MQTT Broker Connection
     # The pipeline continues even if the broker is unreachable — observations
     # are still processed and logged locally; only MQTT transport is skipped.
@@ -153,9 +162,24 @@ def run_pipeline(config_path: str = "config/config.yaml", max_windows: int = Non
 
             fhir_json = observation_to_json(fhir_obs)
 
+            # Step C2: Persist to local SQLite store (offline-first)
+            # The observation is saved BEFORE MQTT publication so that it
+            # survives broker outages, container restarts, and network drops.
+            local_store.save_observation(
+                observation_id=fhir_obs.id,
+                subject_id=config.simulator.user_id,
+                timestamp=window.get("timestamp", ""),
+                fhir_json=fhir_json,
+                mqtt_published=False,
+            )
+
             # Step D: Publish Payload over MQTT
             # Returns True if delivered, False if offline (pipeline continues).
             pub_status = mqtt_publisher.publish(topic, fhir_json, qos=1)
+
+            # Step D2: Update local store with publication status
+            if pub_status:
+                local_store.mark_as_published(fhir_obs.id)
 
             # Step E: Telemetry & Logging Output
             # Provides a concise per-window summary for debugging and
@@ -180,8 +204,10 @@ def run_pipeline(config_path: str = "config/config.yaml", max_windows: int = Non
     except KeyboardInterrupt:
         logger.info("Pipeline stopped by user (KeyboardInterrupt).")
     finally:
-        # Ensure clean shutdown: stop MQTT background thread and close socket.
+        # Ensure clean shutdown: stop MQTT background thread, close socket
+        # and SQLite connection.
         mqtt_publisher.disconnect()
+        local_store.close()
         logger.info(f"Pipeline shutdown complete. Total windows processed: {processed_count}")
 
 
