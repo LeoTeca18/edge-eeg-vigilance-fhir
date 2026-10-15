@@ -48,6 +48,7 @@ from src.decision_layer import AlertDecisionEngine
 from src.fhir_builder import build_fhir_observation, observation_to_json
 from src.local_store import LocalFhirStore
 from src.mqtt_client import MqttPublisher
+from src.privacy import pseudonymize_identifier
 from src.quality_gate import QualityGate
 from src.simulator import StreamSimulator
 
@@ -80,6 +81,14 @@ def run_pipeline(config_path: str = "config/config.yaml", max_windows: int = Non
     logger.info("Initializing Edge-First EEG Vigilance Architecture...")
     config = load_config(config_path)
 
+    # LGPD Privacy: Ensure subject identifier is pseudonymised (Art. 13)
+    if config.privacy.enforce_pseudonymization:
+        effective_user_id = pseudonymize_identifier(config.simulator.user_id)
+        if effective_user_id != config.simulator.user_id:
+            logger.info(f"LGPD Pseudonymisation applied: '{config.simulator.user_id}' -> '{effective_user_id}'")
+    else:
+        effective_user_id = config.simulator.user_id
+
     # -------------------------------------------------------------------------
     # Step 1: Instantiate Core Components
     # Each component receives only its relevant sub-configuration, enforcing
@@ -88,7 +97,7 @@ def run_pipeline(config_path: str = "config/config.yaml", max_windows: int = Non
     simulator = StreamSimulator(
         input_file=config.simulator.input_file,
         stream_interval_seconds=config.simulator.stream_interval_seconds,
-        user_id=config.simulator.user_id,
+        user_id=effective_user_id,
         device_id=config.simulator.device_id,
     )
 
@@ -110,6 +119,12 @@ def run_pipeline(config_path: str = "config/config.yaml", max_windows: int = Non
     local_store = LocalFhirStore()
     logger.info(f"Local FHIR Store initialised at '{local_store.db_path}'")
 
+    # LGPD Storage Limitation: Purge old published observations on startup (Art. 16)
+    if config.privacy.retention_days > 0:
+        purged = local_store.purge_old_published_observations(config.privacy.retention_days)
+        if purged > 0:
+            logger.info(f"LGPD Retention Policy: Cleaned {purged} old published records from edge store.")
+
     # -------------------------------------------------------------------------
     # Step 2: Establish MQTT Broker Connection
     # The pipeline continues even if the broker is unreachable — observations
@@ -120,8 +135,8 @@ def run_pipeline(config_path: str = "config/config.yaml", max_windows: int = Non
     if not connected:
         logger.warning("Proceeding without active MQTT connection (messages will be logged locally).")
 
-    # Format the MQTT topic with the subject's user_id.
-    topic = config.mqtt.topic_template.format(user_id=config.simulator.user_id)
+    # Format the MQTT topic with the subject's effective_user_id.
+    topic = config.mqtt.topic_template.format(user_id=effective_user_id)
     logger.info(f"Pipeline Active. Publishing FHIR Observations to MQTT Topic: '{topic}'")
 
     # -------------------------------------------------------------------------
@@ -156,7 +171,7 @@ def run_pipeline(config_path: str = "config/config.yaml", max_windows: int = Non
                 window=window,
                 quality_eval=quality_eval,
                 decision_result=decision_result,
-                user_id=config.simulator.user_id,
+                user_id=effective_user_id,
                 device_id=config.simulator.device_id,
             )
 
@@ -167,7 +182,7 @@ def run_pipeline(config_path: str = "config/config.yaml", max_windows: int = Non
             # survives broker outages, container restarts, and network drops.
             local_store.save_observation(
                 observation_id=fhir_obs.id,
-                subject_id=config.simulator.user_id,
+                subject_id=effective_user_id,
                 timestamp=window.get("timestamp", ""),
                 fhir_json=fhir_json,
                 mqtt_published=False,

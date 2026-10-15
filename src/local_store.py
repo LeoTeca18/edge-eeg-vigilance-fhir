@@ -160,6 +160,55 @@ class LocalFhirStore:
         cursor = self.conn.execute("SELECT COUNT(*) FROM observations")
         return cursor.fetchone()[0]
 
+    def delete_subject_data(self, subject_id: str) -> int:
+        """Deletes all observations associated with a specific subject (LGPD Art. 18, VI).
+
+        Supports the data subject's right to erasure / revocation of consent.
+        Removes all stored records for ``subject_id`` regardless of publish status.
+
+        Args:
+            subject_id: Patient / subject identifier whose data should be purged.
+
+        Returns:
+            Number of rows deleted.
+        """
+        cursor = self.conn.execute(
+            "DELETE FROM observations WHERE subject_id = ?",
+            (subject_id,),
+        )
+        self.conn.commit()
+        deleted = cursor.rowcount
+        logger.info(f"LGPD Erasure: Deleted {deleted} observation(s) for subject '{subject_id}'")
+        return deleted
+
+    def purge_old_published_observations(self, retention_days: int = 7) -> int:
+        """Purges old published observations to limit storage on the edge (LGPD Art. 16).
+
+        Observations that have already been confirmed published (``mqtt_published = 1``)
+        and are older than ``retention_days`` are safely removed from the edge gateway,
+        minimising attack surface and enforcing storage limitation.
+
+        Unpublished observations are NEVER purged, protecting against data loss.
+
+        Args:
+            retention_days: Maximum age in days for published records (default: 7).
+
+        Returns:
+            Number of old records purged.
+        """
+        from datetime import timedelta
+        cutoff_date = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+        cursor = self.conn.execute(
+            "DELETE FROM observations WHERE mqtt_published = 1 AND created_at < ?",
+            (cutoff_date,),
+        )
+        self.conn.commit()
+        purged = cursor.rowcount
+        if purged > 0:
+            logger.info(f"LGPD Retention: Purged {purged} published observation(s) older than {retention_days} days")
+        return purged
+
     def close(self) -> None:
         """Closes the SQLite database connection."""
         self.conn.close()
+

@@ -103,3 +103,57 @@ def test_idempotent_upsert(temp_store):
     # The latest insert should have overwritten the first.
     unpublished = temp_store.get_unpublished_observations()
     assert len(unpublished) == 0  # Now marked as published
+
+
+def test_lgpd_delete_subject_data(temp_store):
+    """Verifies that LGPD Art. 18, VI deletion purges all observations for a subject."""
+    temp_store.save_observation("obs-1", "user-01", "2026-01-01T10:00:00Z", "{}", False)
+    temp_store.save_observation("obs-2", "user-01", "2026-01-01T10:00:01Z", "{}", True)
+    temp_store.save_observation("obs-3", "user-02", "2026-01-01T10:00:02Z", "{}", True)
+
+    assert temp_store.count_all() == 3
+
+    deleted = temp_store.delete_subject_data("user-01")
+    assert deleted == 2
+    assert temp_store.count_all() == 1
+
+    # Remaining record must belong to user-02
+    cursor = temp_store.conn.execute("SELECT subject_id FROM observations")
+    assert cursor.fetchone()[0] == "user-02"
+
+
+def test_lgpd_purge_old_published_observations(temp_store):
+    """Verifies that LGPD Art. 16 storage limitation purges only old published records."""
+    from datetime import datetime, timezone, timedelta
+
+    old_date = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+    recent_date = datetime.now(timezone.utc).isoformat()
+
+    # Old published record (should be purged)
+    temp_store.conn.execute(
+        "INSERT INTO observations VALUES ('old-pub', 'u1', ?, '{}', 1, ?)",
+        (old_date, old_date),
+    )
+    # Old UNPUBLISHED record (should NOT be purged, zero data loss guarantee)
+    temp_store.conn.execute(
+        "INSERT INTO observations VALUES ('old-unpub', 'u1', ?, '{}', 0, ?)",
+        (old_date, old_date),
+    )
+    # Recent published record (should NOT be purged, within retention)
+    temp_store.conn.execute(
+        "INSERT INTO observations VALUES ('rec-pub', 'u1', ?, '{}', 1, ?)",
+        (recent_date, recent_date),
+    )
+    temp_store.conn.commit()
+
+    assert temp_store.count_all() == 3
+
+    purged = temp_store.purge_old_published_observations(retention_days=7)
+    assert purged == 1
+    assert temp_store.count_all() == 2
+
+    # Remaining records must be old-unpub and rec-pub
+    cursor = temp_store.conn.execute("SELECT id FROM observations ORDER BY id")
+    ids = [row[0] for row in cursor.fetchall()]
+    assert ids == ["old-unpub", "rec-pub"]
+

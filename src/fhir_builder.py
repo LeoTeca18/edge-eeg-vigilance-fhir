@@ -54,6 +54,7 @@ from fhir.resources.quantity import Quantity
 from fhir.resources.reference import Reference
 
 from src.decision_layer import AlertDecisionResult
+from src.privacy import get_fhir_lgpd_security_meta
 from src.quality_gate import QualityEvaluation, QualityGateResult
 
 
@@ -284,6 +285,7 @@ def build_fhir_observation(
     obs_id = f"obs-{user_id}-w{window_idx}"
     observation = Observation(
         id=obs_id,
+        meta=get_fhir_lgpd_security_meta(),  # LGPD: Sensitive health data confidentiality tag
         status="preliminary",  # All windows are "preliminary" — not clinician-reviewed
         category=category,
         code=code,

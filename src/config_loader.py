@@ -189,6 +189,26 @@ class QualityConfig(BaseModel):
     )
 
 
+class PrivacyConfig(BaseModel):
+    """LGPD Privacy & Data Governance configuration (Lei nº 13.709/2018).
+
+    Governs pseudonymisation, data retention limits, and legal basis metadata
+    for sensitive health telemetry processed on the edge gateway.
+    """
+    enforce_pseudonymization: bool = Field(
+        default=True,
+        description="Whether to sanitize/pseudonymize user identifiers before ingestion (Art. 13).",
+    )
+    retention_days: int = Field(
+        default=7,
+        description="Maximum days to retain published observations in local store before purge (Art. 16).",
+    )
+    legal_basis: str = Field(
+        default="Art. 11, II, c (Health Research / Academic Study)",
+        description="Declared LGPD legal basis for processing sensitive health/EEG data.",
+    )
+
+
 class AppConfig(BaseModel):
     """Root configuration object aggregating all subsystem configurations.
 
@@ -200,6 +220,8 @@ class AppConfig(BaseModel):
     decision: DecisionConfig = Field(default_factory=DecisionConfig)
     simulator: SimulatorConfig = Field(default_factory=SimulatorConfig)
     quality: QualityConfig = Field(default_factory=QualityConfig)
+    privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
+
 
 
 def load_config(config_path: str = "config/config.yaml") -> AppConfig:

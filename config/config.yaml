@@ -74,3 +74,15 @@ quality:
   # Maximum acceptable EMG / high-beta proxy power (µV²).
   # High values indicate muscle tension artifacts (jaw clenching, facial contraction).
   emg_power_max_threshold: 30.0
+
+privacy:
+  # LGPD Data Governance (Lei Federal nº 13.709/2018)
+  # Automatically ensures user identifiers are pseudonymised (Art. 13)
+  enforce_pseudonymization: true
+
+  # Storage limitation on edge gateway: days to keep published records in SQLite (Art. 16)
+  retention_days: 7
+
+  # Declared legal basis for processing sensitive health telemetry (Art. 11, II, c)
+  legal_basis: "Art. 11, II, c (Health Research / Academic Study)"
+
