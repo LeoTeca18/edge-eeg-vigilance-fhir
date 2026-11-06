@@ -145,6 +145,11 @@ class SimulatorConfig(BaseModel):
             "instead of generating synthetic data."
         ),
     )
+    loop_playback: bool = Field(
+        default=True,
+        description="Whether to loop file replay continuously for uninterrupted demonstrations.",
+    )
+
 
 
 class QualityConfig(BaseModel):
