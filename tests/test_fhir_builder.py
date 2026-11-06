@@ -1,17 +1,13 @@
 """Unit tests for the FHIR Builder module.
 
 These tests verify that the FHIR R4 resource generation functions produce
-valid, standards-compliant resources.  They cover:
+valid, standards-compliant resources. They cover:
 
     1. Device resource construction with correct identifiers and status.
     2. Observation resource for USABLE windows — all four components present.
-    3. Observation resource for INDETERMINATE windows — ``dataAbsentReason``
-       of ``"unreliable"`` is correctly applied to the quality-gate-status
-       component, ensuring that no data is silently dropped.
-
-The third test is the most critical: it validates the project's core design
-principle that rejected windows are ALWAYS preserved with proper FHIR
-metadata rather than being discarded.
+    3. Observation resource for INDETERMINATE windows — canonical 'IND' status,
+       ``dataAbsentReason`` of ``"unreliable"``, and avoidance of synthetic numeric
+       quantities on corrupted signals (FHIR invariant obs-6).
 """
 
 import json
@@ -25,9 +21,6 @@ from src.quality_gate import QualityEvaluation, QualityGateResult
 def test_build_fhir_device():
     """Verifies that the FHIR Device resource is constructed with correct
     identifiers, manufacturer, and an 'active' status.
-
-    The Device resource is linked from every Observation via the ``device``
-    reference, enabling provenance tracking across the entire dataset.
     """
     device = build_fhir_device(device_id="tgam-01", manufacturer="NeuroSky", model_name="TGAM Headband")
     assert device.id == "tgam-01"
@@ -36,14 +29,7 @@ def test_build_fhir_device():
 
 
 def test_build_fhir_observation_usable_window():
-    """Verifies FHIR Observation generation for a usable (high-quality) window.
-
-    A usable window should produce an Observation with:
-        - ``status = "preliminary"`` (continuous monitoring, not clinician-reviewed).
-        - Correct ``subject`` and ``device`` references.
-        - Exactly four components (p-drop, α/θ ratio, quality status, alert).
-        - Valid JSON serialisation with ``resourceType = "Observation"``.
-    """
+    """Verifies FHIR Observation generation for a usable (high-quality) window."""
     window = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "window_id": 1,
@@ -82,15 +68,13 @@ def test_build_fhir_observation_usable_window():
 def test_build_fhir_observation_indeterminate_window():
     """Verifies FHIR Observation generation for an indeterminate (rejected) window.
 
-    THIS IS THE MOST CRITICAL TEST in the project.  It validates that:
-        1. Rejected windows are NOT dropped — they produce a full Observation.
-        2. The quality-gate-status component has ``valueString = "indeterminate"``.
-        3. A ``dataAbsentReason`` with coding ``"unreliable"`` is present,
-           following FHIR best practices for recording unreliable data.
-
-    Without this behaviour, the clinical audit trail would have gaps — there
-    would be no record of windows that were acquired but deemed physically
-    unreliable.
+    Validates that:
+        1. Rejected windows are preserved in the clinical record.
+        2. The quality-gate-status component carries the canonical 'IND' code
+           and dataAbsentReason='unreliable'.
+        3. Numeric inference values (e.g. p-vigilance-drop) are not published
+           as valid quantities when the physical signal is rejected; instead,
+           they carry dataAbsentReason.
     """
     window = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -111,16 +95,28 @@ def test_build_fhir_observation_indeterminate_window():
     json_str = observation_to_json(obs)
     data = json.loads(json_str)
 
-    # Find the quality-gate-status component in the serialised JSON.
+    # Locate components
     quality_comp = None
+    p_drop_comp = None
     for comp in data["component"]:
         codes = [c["code"] for c in comp["code"]["coding"]]
         if "quality-gate-status" in codes:
             quality_comp = comp
-            break
+        elif "p-vigilance-drop" in codes:
+            p_drop_comp = comp
 
-    # Verify indeterminate encoding with dataAbsentReason.
+    # Verify canonical IND quality encoding with dataAbsentReason
     assert quality_comp is not None
-    assert quality_comp["valueString"] == "indeterminate"
+    code_val = (
+        quality_comp.get("valueCodeableConcept", {}).get("coding", [{}])[0].get("code")
+        or quality_comp.get("valueCodeableConcept", {}).get("text")
+        or quality_comp.get("valueString")
+    )
+    assert code_val == "IND"
     assert "dataAbsentReason" in quality_comp
     assert quality_comp["dataAbsentReason"]["coding"][0]["code"] == "unreliable"
+
+    # Verify p-vigilance-drop is marked unreliable and has no numerical value
+    assert p_drop_comp is not None
+    assert "valueQuantity" not in p_drop_comp
+    assert p_drop_comp["dataAbsentReason"]["coding"][0]["code"] == "unreliable"

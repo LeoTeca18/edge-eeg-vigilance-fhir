@@ -2,50 +2,32 @@
 
 WHY THIS MODULE EXISTS
 ----------------------
-Healthcare data interoperability is one of the biggest challenges in clinical
-IoT.  Proprietary data formats lock information into vendor-specific silos,
-making it impossible to integrate across hospitals, research platforms, or
-electronic health record (EHR) systems.
+Healthcare data interoperability is one of the foundational challenges in
+clinical IoT. Proprietary data formats lock information into vendor-specific
+silos, hindering cross-institution research, integration with electronic health
+records (EHRs), and clinical auditing.
 
-This module solves that problem by converting every EEG telemetry window into
-a **HL7 FHIR R4 Observation** resource — the international standard for
-healthcare data exchange.  Using FHIR means:
+This module converts each processed EEG telemetry window into an international
+standard HL7 FHIR R4 Observation resource and supports creating associated
+FHIR R4 Device resources. Key architectural principles include:
 
-    - Any FHIR-compliant system (HAPI FHIR Server, Google Cloud Healthcare
-      API, Azure Health Data Services, etc.) can ingest and query the data.
-    - Clinical researchers can aggregate observations across patients, devices,
-      and time periods using standard FHIR search parameters.
-    - The data is self-describing — each observation carries its own codes,
-      units, subject references, and quality metadata.
-
-CRITICAL DESIGN DECISIONS
---------------------------
-1. **No data is ever dropped.** Indeterminate windows (those that failed the
-   quality gate) are encoded with ``status="preliminary"``,
-   ``valueString="indeterminate"``, and a ``dataAbsentReason`` coding of
-   ``"unreliable"``.  This guarantees a complete audit trail.
-
-2. **All windows use ``status="preliminary"``** because this is a continuous
-   monitoring pipeline — observations are not reviewed by a clinician before
-   publication.  A downstream system could upgrade the status to ``"final"``
-   after clinical review.
-
-3. **Component-based encoding.** Each observation carries four FHIR components:
-       - P(vigilance drop) — the core inference output.
-       - Alpha/Theta ratio — the primary spectral feature.
-       - Quality gate status — usable vs. indeterminate.
-       - Alert triggered — boolean from the decision engine.
-
-HOW IT WORKS
-------------
-``build_fhir_observation()`` takes a raw window dictionary, a
-``QualityEvaluation``, and an optional ``AlertDecisionResult``, and returns
-a fully structured ``fhir.resources.Observation`` instance.  The companion
-``observation_to_json()`` serialises it to a JSON string for MQTT transport.
+    1. **Zero Data Loss Audit Trail**: Corrupted or artifact-laden windows are
+       never dropped silently. They are preserved in the clinical record as
+       FHIR Observations with `status="preliminary"`.
+    2. **Canonical Indeterminate Status ('IND') & FHIR Invariant obs-6**:
+       Per HL7 FHIR R4 rules, when a signal quality gate fails (contact loss,
+       excessive motion, EMG artifacts), the quality gate status component is
+       formally marked as 'IND' (HL7 Table 0532 Indeterminate) with a
+       `dataAbsentReason` of 'unreliable'. Crucially, numerical inference values
+       such as p-vigilance-drop and alpha-theta-ratio do NOT emit synthetic or
+       misleading numbers; they carry `dataAbsentReason` to maintain clinical
+       fidelity.
+    3. **Session Device Provenance**: Devices are explicitly modeled as FHIR
+       Device resources and referenced from every Observation.
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 from fhir.resources.codeableconcept import CodeableConcept
 from fhir.resources.coding import Coding
 from fhir.resources.device import Device, DeviceName
@@ -57,19 +39,23 @@ from src.decision_layer import AlertDecisionResult
 from src.privacy import get_fhir_lgpd_security_meta
 from src.quality_gate import QualityEvaluation, QualityGateResult
 
+# Standard HL7 Terminology URIs
+HL7_DATA_ABSENT_REASON_SYSTEM = "http://terminology.hlth.org/CodeSystem/data-absent-reason"
+HL7_OBS_CATEGORY_SYSTEM = "http://terminology.hlth.org/CodeSystem/observation-category"
+HL7_V2_TABLE_0532_SYSTEM = "http://terminology.hlth.org/CodeSystem/v2-0532"
+LOCAL_CODE_SYSTEM = "http://local-eeg-system/codes"
+
 
 def build_fhir_device(
     device_id: str = "tgam-headband-01",
     manufacturer: str = "NeuroSky",
     model_name: str = "TGAM Single-Channel EEG",
 ) -> Device:
-    """Builds a FHIR R4 Device resource representing the EEG headband.
+    """Builds a native FHIR R4 Device resource representing the EEG sensor.
 
     The Device resource is referenced from each Observation via
-    ``observation.device``, linking every data point to the specific hardware
-    that acquired it.  This is essential for provenance tracking — if a
-    device is later found to be defective, all its observations can be
-    identified and flagged.
+    ``observation.device``, linking every window to the specific hardware
+    that acquired it.
 
     Args:
         device_id: Unique hardware or logical device identifier.
@@ -99,48 +85,38 @@ def build_fhir_observation(
     user_id: str = "user-01",
     device_id: str = "tgam-headband-01",
 ) -> Observation:
-    """Converts a raw EEG window dictionary into a FHIR R4 Observation.
+    """Converts a raw EEG window dictionary into a compliant FHIR R4 Observation.
 
-    This is the core interoperability function.  It maps internal telemetry
-    fields to standardised FHIR components, ensuring that rejected windows
-    are preserved with proper ``dataAbsentReason`` codings rather than being
-    silently discarded.
-
-    The resulting Observation contains four components:
-        1. **p-vigilance-drop**: The probability of vigilance drop [0, 1].
-        2. **alpha-theta-ratio**: Spectral ratio α/θ (higher = more alert).
-        3. **quality-gate-status**: ``"usable"`` or ``"indeterminate"`` with
-           ``dataAbsentReason = "unreliable"`` when indeterminate.
-        4. **alert-triggered**: Boolean indicating whether the decision
-           engine dispatched an alert for this window.
+    This function handles both usable and rejected (indeterminate) windows:
+    - Usable windows include quantitative measurements for P(vigilance drop),
+      Alpha/Theta spectral ratio, quality status ('usable'), and alert status.
+    - Indeterminate windows preserve the event for auditing without leaking
+      untrustworthy numerical quantities. The quality status is explicitly
+      coded as 'IND' (HL7 Table 0532) and accompanied by a ``dataAbsentReason``
+      of 'unreliable', adhering to the FHIR invariant obs-6.
 
     Args:
-        window: Raw telemetry dictionary from the simulator or file replayer.
-        quality_eval: ``QualityEvaluation`` from the quality gate.
-        decision_result: Optional ``AlertDecisionResult`` from the decision
-                         engine.  If ``None``, ``alert-triggered`` defaults
-                         to ``False``.
-        user_id: Subject / patient identifier for the FHIR ``subject``
-                 reference.
-        device_id: EEG device identifier for the FHIR ``device`` reference.
+        window: Raw telemetry dictionary from the acquisition layer.
+        quality_eval: Quality evaluation result from the QualityGate.
+        decision_result: Optional result from AlertDecisionEngine.
+        user_id: Pseudonymized subject identifier for ``subject``.
+        device_id: Identifier for ``device``.
 
     Returns:
-        A fully populated FHIR R4 ``Observation`` resource instance.
+        A fully validated FHIR R4 ``Observation`` resource instance.
     """
     timestamp_str = window.get("timestamp") or datetime.now(timezone.utc).isoformat()
     p_drop = float(window.get("p_vigilance_drop", 0.0))
     at_ratio = float(window.get("alpha_theta_ratio", 1.0))
     window_idx = window.get("window_id", 0)
+    is_usable = (quality_eval.status == QualityGateResult.USABLE)
 
-    # --- Category: Activity ---
-    # FHIR observation categories help systems filter and group observations.
-    # "activity" is appropriate because vigilance monitoring is a form of
-    # continuous behavioural/physiological activity tracking.
+    # 1. Category: Activity / Monitoring
     category = [
         CodeableConcept(
             coding=[
                 Coding(
-                    system="http://terminology.hlth.org/CodeSystem/observation-category",
+                    system=HL7_OBS_CATEGORY_SYSTEM,
                     code="activity",
                     display="Activity",
                 )
@@ -148,111 +124,158 @@ def build_fhir_observation(
         )
     ]
 
-    # --- Primary Observation Code ---
-    # Uses a local code system because there is no universally agreed LOINC
-    # or SNOMED code for "EEG vigilance window assessment" yet.  When a
-    # standard code becomes available, this should be updated.
+    # 2. Main Observation Code
     code = CodeableConcept(
         coding=[
             Coding(
-                system="http://local-eeg-system/codes",
+                system=LOCAL_CODE_SYSTEM,
                 code="vigilance-window",
                 display="EEG Vigilance Window Assessment",
             )
         ]
     )
 
-    # --- Subject & Device references ---
-    # These references link each Observation to the patient and hardware,
-    # enabling FHIR queries like "all observations for Patient/user-01".
-    subject = Reference(reference=f"Patient/{user_id}")
-    device_ref = Reference(reference=f"Device/{device_id}")
-
-    # --- Build observation components ---
+    # 3. Observation Components
     components = []
 
     # Component 1: Probability of Vigilance Drop
-    # This is the core inference output — the estimated probability that the
-    # subject's vigilance has dropped below a safe level.
-    components.append(
-        ObservationComponent(
-            code=CodeableConcept(
-                coding=[
-                    Coding(
-                        system="http://local-eeg-system/codes",
-                        code="p-vigilance-drop",
-                        display="Probability of Vigilance Drop",
-                    )
-                ]
-            ),
-            valueQuantity=Quantity(
-                value=round(p_drop, 4),
-                unit="probability",
-                system="http://unitsofmeasure.org",
-                code="1",  # Dimensionless unit code per UCUM
-            ),
-        )
-    )
-
-    # Component 2: Alpha/Theta Ratio
-    # The α/θ spectral ratio is a well-established biomarker for vigilance.
-    # High ratios indicate alert states (strong alpha rhythm); low ratios
-    # indicate drowsiness (theta dominance).
-    components.append(
-        ObservationComponent(
-            code=CodeableConcept(
-                coding=[
-                    Coding(
-                        system="http://local-eeg-system/codes",
-                        code="alpha-theta-ratio",
-                        display="Alpha to Theta Band Ratio",
-                    )
-                ]
-            ),
-            valueQuantity=Quantity(
-                value=round(at_ratio, 3),
-                unit="ratio",
-            ),
-        )
-    )
-
-    # Component 3: Quality Gate Status
-    # This component records whether the window's signal was physically
-    # trustworthy.  For indeterminate windows, a ``dataAbsentReason`` of
-    # "unreliable" is added per FHIR best practices — signalling that the
-    # observation exists but should not be used for clinical decisions.
-    if quality_eval.status == QualityGateResult.USABLE:
-        quality_component = ObservationComponent(
-            code=CodeableConcept(
-                coding=[
-                    Coding(
-                        system="http://local-eeg-system/codes",
-                        code="quality-gate-status",
-                        display="Signal Quality Gate Status",
-                    )
-                ]
-            ),
-            valueString="usable",
+    # When signal quality is indeterminate, do not emit misleading numeric quantities.
+    if is_usable:
+        components.append(
+            ObservationComponent(
+                code=CodeableConcept(
+                    coding=[
+                        Coding(
+                            system=LOCAL_CODE_SYSTEM,
+                            code="p-vigilance-drop",
+                            display="Probability of Vigilance Drop",
+                        )
+                    ]
+                ),
+                valueQuantity=Quantity(
+                    value=round(p_drop, 4),
+                    unit="probability",
+                    system="http://unitsofmeasure.org",
+                    code="1",  # Dimensionless ratio per UCUM
+                ),
+            )
         )
     else:
-        # Indeterminate: add dataAbsentReason coding ("unreliable") so that
-        # downstream FHIR consumers know this observation's numeric values
-        # are NOT clinically reliable.
+        components.append(
+            ObservationComponent(
+                code=CodeableConcept(
+                    coding=[
+                        Coding(
+                            system=LOCAL_CODE_SYSTEM,
+                            code="p-vigilance-drop",
+                            display="Probability of Vigilance Drop",
+                        )
+                    ]
+                ),
+                dataAbsentReason=CodeableConcept(
+                    coding=[
+                        Coding(
+                            system=HL7_DATA_ABSENT_REASON_SYSTEM,
+                            code="unreliable",
+                            display="Unreliable",
+                        )
+                    ]
+                ),
+            )
+        )
+
+    # Component 2: Alpha/Theta Band Ratio
+    if is_usable:
+        components.append(
+            ObservationComponent(
+                code=CodeableConcept(
+                    coding=[
+                        Coding(
+                            system=LOCAL_CODE_SYSTEM,
+                            code="alpha-theta-ratio",
+                            display="Alpha to Theta Band Ratio",
+                        )
+                    ]
+                ),
+                valueQuantity=Quantity(
+                    value=round(at_ratio, 3),
+                    unit="ratio",
+                ),
+            )
+        )
+    else:
+        components.append(
+            ObservationComponent(
+                code=CodeableConcept(
+                    coding=[
+                        Coding(
+                            system=LOCAL_CODE_SYSTEM,
+                            code="alpha-theta-ratio",
+                            display="Alpha to Theta Band Ratio",
+                        )
+                    ]
+                ),
+                dataAbsentReason=CodeableConcept(
+                    coding=[
+                        Coding(
+                            system=HL7_DATA_ABSENT_REASON_SYSTEM,
+                            code="unreliable",
+                            display="Unreliable",
+                        )
+                    ]
+                ),
+            )
+        )
+
+    # Component 3: Signal Quality Gate Status
+    # Encodes 'usable' vs. canonical 'IND' (HL7 Table 0532) with dataAbsentReason
+    if is_usable:
         quality_component = ObservationComponent(
             code=CodeableConcept(
                 coding=[
                     Coding(
-                        system="http://local-eeg-system/codes",
+                        system=LOCAL_CODE_SYSTEM,
                         code="quality-gate-status",
                         display="Signal Quality Gate Status",
                     )
                 ]
             ),
-            valueString="indeterminate",
+            valueCodeableConcept=CodeableConcept(
+                coding=[
+                    Coding(
+                        system=LOCAL_CODE_SYSTEM,
+                        code="usable",
+                        display="Usable",
+                    )
+                ],
+                text="usable",
+            ),
+        )
+    else:
+        quality_component = ObservationComponent(
+            code=CodeableConcept(
+                coding=[
+                    Coding(
+                        system=LOCAL_CODE_SYSTEM,
+                        code="quality-gate-status",
+                        display="Signal Quality Gate Status",
+                    )
+                ]
+            ),
+            valueCodeableConcept=CodeableConcept(
+                coding=[
+                    Coding(
+                        system=HL7_V2_TABLE_0532_SYSTEM,
+                        code="IND",
+                        display="Indeterminate",
+                    )
+                ],
+                text="IND",
+            ),
             dataAbsentReason=CodeableConcept(
                 coding=[
                     Coding(
-                        system="http://terminology.hlth.org/CodeSystem/data-absent-reason",
+                        system=HL7_DATA_ABSENT_REASON_SYSTEM,
                         code="unreliable",
                         display="Unreliable",
                     )
@@ -263,15 +286,13 @@ def build_fhir_observation(
     components.append(quality_component)
 
     # Component 4: Decision Engine Alert Status
-    # Records whether the decision engine dispatched an alert for this window.
-    # This allows retrospective analysis of alert patterns.
     trigger_alert = decision_result.trigger_alert if decision_result else False
     components.append(
         ObservationComponent(
             code=CodeableConcept(
                 coding=[
                     Coding(
-                        system="http://local-eeg-system/codes",
+                        system=LOCAL_CODE_SYSTEM,
                         code="alert-triggered",
                         display="Decision Engine Alert Dispatched",
                     )
@@ -281,34 +302,31 @@ def build_fhir_observation(
         )
     )
 
-    # --- Assemble the final Observation resource ---
+    # Build the final Observation resource
     obs_id = f"obs-{user_id}-w{window_idx}"
-    observation = Observation(
+    return Observation(
         id=obs_id,
-        meta=get_fhir_lgpd_security_meta(),  # LGPD: Sensitive health data confidentiality tag
-        status="preliminary",  # All windows are "preliminary" — not clinician-reviewed
+        meta=get_fhir_lgpd_security_meta(),
+        status="preliminary",
         category=category,
         code=code,
-        subject=subject,
-        device=device_ref,
+        subject=Reference(reference=f"Patient/{user_id}"),
+        device=Reference(reference=f"Device/{device_id}"),
         effectiveDateTime=timestamp_str,
         component=components,
     )
-
-    return observation
 
 
 def observation_to_json(observation: Observation) -> str:
     """Serialises a FHIR R4 Observation resource to a compact JSON string.
 
     Uses Pydantic's ``model_dump_json`` with ``exclude_none=True`` to produce
-    a clean JSON payload without null fields — keeping MQTT message sizes
-    minimal while remaining fully FHIR-compliant.
+    a clean JSON payload without null fields.
 
     Args:
         observation: The FHIR R4 Observation resource to serialise.
 
     Returns:
-        A JSON string ready for MQTT publication or HTTP POST to a FHIR server.
+        A JSON string ready for MQTT transport or local SQLite storage.
     """
     return observation.model_dump_json(exclude_none=True)
