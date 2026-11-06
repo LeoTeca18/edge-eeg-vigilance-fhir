@@ -45,22 +45,24 @@ def on_message(c, u, m):
     print(f"MSG on {m.topic}: {payload_preview}")
 
 
-# Automatic Paho API version detection (v2 vs v1 compatibility).
-try:
-    cl = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id="test-sub")
-except (AttributeError, ValueError):
-    cl = mqtt.Client(client_id="test-sub")
+if __name__ == "__main__":
+    # Automatic Paho API version detection (v2 vs v1 compatibility).
+    try:
+        cl = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id="test-sub")
+    except (AttributeError, ValueError):
+        cl = mqtt.Client(client_id="test-sub")
 
-cl.on_connect = on_connect
-cl.on_message = on_message
+    cl.on_connect = on_connect
+    cl.on_message = on_message
 
-# Connect to the Mosquitto broker.
-# Change "mosquitto" to "localhost" if running outside Docker.
-cl.connect("mosquitto", 1883, 60)
-cl.loop_start()
+    # Connect to the Mosquitto broker.
+    # Change "mosquitto" to "localhost" if running outside Docker.
+    cl.connect("mosquitto", 1883, 60)
+    cl.loop_start()
 
-# Listen for 5 seconds, then disconnect.
-time.sleep(5)
-cl.loop_stop()
-cl.disconnect()
-print("Done")
+    # Listen for 5 seconds, then disconnect.
+    time.sleep(5)
+    cl.loop_stop()
+    cl.disconnect()
+    print("Done")
+
