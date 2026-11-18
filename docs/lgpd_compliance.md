@@ -1,80 +1,85 @@
-# 🛡️ Relatório de Conformidade com a LGPD (Lei Federal nº 13.709/2018)
+# 🛡️ LGPD Compliance Report (Federal Law No. 13.709/2018)
 
-> **Projeto:** Vigilance-Drop Detection With Single-Channel Consumer EEG — Edge Inference And FHIR-Native Observations  
-> **Contexto Acadêmico:** Mestrado em Computação Aplicada — UNISINOS (Linha de Computação Aplicada à Saúde)  
-> **Classificação dos Dados:** Dados Pessoais Sensíveis de Saúde (Art. 5º, II da LGPD)  
-
----
-
-## 1. Enquadramento Legal e Base de Tratamento
-
-Sinais eletroencefalográficos (EEG), índices de fadiga e probabilidades de rebaixamento de vigilância constituem **dados biomédicos referentes à saúde**, enquadrados como **Dados Pessoais Sensíveis** segundo o **Artigo 5º, inciso II da LGPD**.
-
-O tratamento desses dados nesta arquitetura de software fundamenta-se nas seguintes bases legais:
-
-1. **Art. 11, inciso II, alínea "c" (Realização de estudos por órgão de pesquisa):**
-   * Autoriza expressamente o tratamento de dados pessoais sensíveis para fins acadêmicos e científicos, *garantida, sempre que possível, a anonimização e a pseudonimização dos dados*.
-2. **Art. 11, inciso II, alínea "f" (Tutela da saúde):**
-   * Aplicação em procedimentos com padrões técnicos que visam resguardar a integridade física e segurança de operadores/motoristas contra acidentes decorrentes de sonolência extrema.
+> **Project:** Vigilance‑Drop Detection With Single‑Channel Consumer EEG — Edge Inference And FHIR‑Native Observations
+> **Academic Context:** Master's in Applied Computing — UNISINOS (Applied Computing in Healthcare)
+> **Data Classification:** Sensitive Health Personal Data (Art. 5 II of the LGPD)
 
 ---
 
-## 2. Princípios da LGPD Atendidos na Arquitetura (Art. 6º)
+## 1. Legal Basis and Processing Grounds
 
-| Princípio | Artigo | Como a Arquitetura Cumpre |
+Electroencephalographic (EEG) signals, fatigue indices, and vigilance‑drop probabilities constitute **biomedical health data**, classified as **Sensitive Personal Data** under **Article 5, clause II of the LGPD**.
+
+The processing of these data in this software architecture is based on the following legal grounds:
+
+1. **Art. 11, clause II, item c** (Research studies by a research body):
+   * Explicitly authorises the processing of sensitive personal data for academic and scientific purposes, guaranteeing anonymisation and pseudonymisation where possible.
+2. **Art. 11, clause II, item f** (Health protection):
+   * Applies to procedures with technical standards that aim to protect the physical integrity and safety of operators/drivers against accidents caused by extreme drowsiness.
+
+---
+
+## 2. LGPD Principles Satisfied by the Architecture (Art. 6)
+
+| Principle | Article | How the Architecture Meets It |
 |---|---|---|
-| **Finalidade** | Art. 6º, I | O sistema processa telemetria com propósito legítimo, específico e explícito: detecção de rebaixamento de vigilância em tempo real. |
-| **Adequação** | Art. 6º, II | Os dados coletados (frequências espectrais alfa e teta) são estritamente compatíveis com o estado da arte em neurociência para monitoramento de vigília. |
-| **Necessidade (Minimização)** | Art. 6º, III | **Nenhum dado biográfico** (como Nome, CPF, Telefone, Endereço ou Foto) é coletado ou transmitido. O pipeline extrai apenas features físicas agregadas. |
-| **Livre Acesso & Transparência** | Art. 6º, IV e VI | O painel Streamlit e a persistência local FHIR permitem consulta direta e transparente aos dados registrados da sessão. |
-| **Segurança & Prevenção** | Art. 6º, VII e VIII | *Write-ahead logging* em SQLite local contra perda de dados; tagueamento de segurança HL7 FHIR `meta.security` com confidencialidade `R` (Restricted). |
-| **Não-Discriminação** | Art. 6º, IX | **Proibição expressa por design:** o sistema não calcula "score cerebral", "ranking de produtividade", "idade biológica" ou comparações entre indivíduos. |
-| **Responsabilização** | Art. 6º, X | Trilha de auditoria completa gravada com carimbo de tempo UTC e rastreabilidade no SQLite local. |
+| **Purpose** | Art. 6 I | The system processes telemetry for a legitimate, specific, and explicit purpose: real‑time detection of vigilance drops. |
+| **Adequacy** | Art. 6 II | Collected data (alpha and theta spectral frequencies) are strictly compatible with state‑of‑the‑art neuroscience for vigilance monitoring. |
+| **Necessity (Data Minimisation)** | Art. 6 III | **No biographic data** (e.g., name, CPF, phone, address, photo) are collected or transmitted. The pipeline extracts only aggregated physical features. |
+| **Free Access & Transparency** | Art. 6 IV & VI | The Streamlit dashboard and local FHIR persistence allow direct and transparent query of session‑recorded data. |
+| **Security & Prevention** | Art. 6 VII & VIII | Write‑ahead logging in a local SQLite database prevents data loss; HL7 FHIR `meta.security` tagging with confidentiality `R` (Restricted) protects downstream hospital bus systems. |
+| **Non‑Discrimination** | Art. 6 IX | **Design‑by‑law prohibition:** the system does not compute "brain score", "productivity ranking", "biological age", or any comparisons between individuals. |
+| **Accountability** | Art. 6 X | A complete audit trail with UTC timestamps and traceability is stored in the local SQLite database. |
 
 ---
 
-## 3. Salvaguardas Técnicas Implementadas (*Privacy by Design*)
+## 3. Technical Safeguards Implemented (*Privacy by Design*)
 
-### 3.1 Pseudonimização Obrigatória na Ingestão (Art. 13 & Art. 5º, XI)
-* Módulo: [`src/privacy.py`](file:///c:/Users/Lenovo/Documents/GitHub/edge-eeg-vigilance-fhir/src/privacy.py)
-* Função `pseudonymize_identifier()`:
-  * Detecta e bloqueia identificadores diretos (ex: e-mails, CPFs, nomes compostos).
-  * Converte identificadores em hashes irreversíveis criptográficos com salt (`anon-<digest>`).
-  * Garante que nenhum PII direto trafegue em tópicos MQTT (`study/{user_id}/eeg/observation`) ou em recursos FHIR.
+### 3.1 Mandatory Pseudonymisation at Ingestion (Art. 13 & Art. 5 XI)
+* Module: [`src/privacy.py`](file:///c:/Users/Lenovo/Documents/GitHub/edge-eeg-vigilance-fhir/src/privacy.py)
+* Function `pseudonymize_identifier()`:
+  * Detects and blocks direct identifiers (e.g., e‑mail, CPF, full names).
+  * Converts identifiers into cryptographic irreversible hashes with a salt (`anon-<digest>`).
+  * Guarantees that no direct PII traverses MQTT topics (`study/{user_id}/eeg/observation`) or FHIR resources.
 
-### 3.2 Tagueamento de Confidencialidade HL7 FHIR R4 (Art. 46)
-* Módulo: [`src/fhir_builder.py`](file:///c:/Users/Lenovo/Documents/GitHub/edge-eeg-vigilance-fhir/src/fhir_builder.py)
-* Todas as observações construídas incluem o elemento `meta.security`:
-  ```json
-  "meta": {
-    "security": [
-      {
-        "system": "http://terminology.hl7.org/CodeSystem/v3-Confidentiality",
-        "code": "R",
-        "display": "Restricted"
-      }
-    ]
-  }
-  ```
-  Isso instrui qualquer barramento interoperável hospitalar (EHR/EMR) downstream que o registro exige controle estrito de acesso.
+### 3.2 HL7 FHIR R4 Confidentiality Tagging (Art. 46)
+* Module: [`src/fhir_builder.py`](file:///c:/Users/Lenovo/Documents/GitHub/edge-eeg-vigilance-fhir/src/fhir_builder.py)
+* All built observations include the element `meta.security`:
+```json
+"meta": {
+  "security": [
+    {
+      "system": "http://terminology.hl7.org/CodeSystem/v3-Confidentiality",
+      "code": "R",
+      "display": "Restricted"
+    }
+  ]
+}
+```
+  This instructs any interoperable hospital bus (EHR/EMR) downstream that the record requires strict access control.
 
-### 3.3 Direito do Titular à Eliminação dos Dados (Art. 18, inciso VI)
-* Módulo: [`src/local_store.py`](file:///c:/Users/Lenovo/Documents/GitHub/edge-eeg-vigilance-fhir/src/local_store.py)
-* Método `delete_subject_data(subject_id: str) -> int`:
-  * Permite ao controlador expurgar instantaneamente todas as observações do banco local caso o titular solicite revogação do consentimento ou eliminação da sua base.
+### 3.3 Data Subject’s Right to Erasure (Art. 18, clause VI)
+* Module: [`src/local_store.py`](file:///c:/Users/Lenovo/Documents/GitHub/edge-eeg-vigilance-fhir/src/local_store.py)
+* Method `delete_subject_data(subject_id: str) -> int`:
+  * Allows the controller to instantly purge all observations from the local store if the data subject withdraws consent or requests deletion.
 
-### 3.4 Limitação de Armazenamento no Edge Gateway (Art. 16)
-* Módulo: [`src/local_store.py`](file:///c:/Users/Lenovo/Documents/GitHub/edge-eeg-vigilance-fhir/src/local_store.py)
-* Método `purge_old_published_observations(retention_days=7) -> int`:
-  * Remove automaticamente registros antigos que já foram confirmados e publicados via MQTT.
-  * Protege a memória física do dispositivo edge contra invasões ou furtos, reduzindo a superfície de exposição de dados a longo prazo.
-  * **Garantia de Não-Perda:** Observações que falharam na publicação (`mqtt_published = 0`) **nunca** são expurgadas antes de serem devidamente sincronizadas.
+### 3.4 Edge‑Gateway Storage Limitation (Art. 16)
+* Module: [`src/local_store.py`](file:///c:/Users/Lenovo/Documents/GitHub/edge-eeg-vigilance-fhir/src/local_store.py)
+* Method `purge_old_published_observations(retention_days=7) -> int`:
+  * Automatically removes old records that have already been confirmed and published via MQTT.
+  * Protects the edge device’s physical memory against intrusion or theft, reducing long‑term exposure surface.
+  * **No‑Loss Guarantee:** Observations that failed to publish (`mqtt_published = 0`) are **never** purged before successful synchronization.
 
 ---
 
-## 4. Recomendações para Implantação em Produção
+## 4. Recommendations for Production Deployment
 
-Para transição do ambiente de laboratório para produção clínica ou industrial:
-1. **Comunicação Segura (MQTTS):** Habilitar TLS v1.3 com criptografia AES-256 e certificados mútuos (mTLS) na porta 8883 do Mosquitto.
-2. **Criptografia em Repouso:** Empregar *SQLCipher* ou criptografia de volume no sistema operacional do gateway edge (BitLocker / LUKS) para o arquivo `fhir_observations.db`.
-3. **Termo de Consentimento Livre e Esclarecido (TCLE):** Para sujeitos de pesquisa participantes dos testes de bancada.
+1. **Secure Communication (MQTTS):** Enable TLS 1.3 with AES‑256 encryption and mutual certificates (mTLS) on port 8883 of Mosquitto.
+2. **At‑Rest Encryption:** Use *SQLCipher* or OS‑level volume encryption (BitLocker / LUKS) for the `fhir_observations.db` file.
+3. **Informed Consent Form (Free‑Informed‑Consent – TCLE):** Ensure research participants sign a clear consent document before data collection.
+
+---
+
+## License & Attribution
+
+Developed for the **Master's Programme in Applied Computing at UNISINOS (2026)**. Licensed for academic and research purposes.
